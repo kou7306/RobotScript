@@ -4,7 +4,6 @@ using UnityEngine;
 using Unity.MLAgents;
 using Unity.MLAgents.Sensors;
 using Unity.MLAgents.Actuators;
-using Unity.MLAgents.Policies;
 
 namespace AGV.Control
 {
@@ -12,119 +11,125 @@ namespace AGV.Control
     {
         public Transform target;
         public AGVController agvController;
-        public float distanceThreshold = 1.42f;
+        public float distanceThreshold;
         private float previousDistance;
         private float initialDistance;
-        public Camera agentCamera;
         public Transform agent;
-        public Rigidbody rb;
+        private Rigidbody rb;
 
-        [Header("カメラセンサー設定")]
-        public int cameraWidth = 84;
-        public int cameraHeight = 84;
-        public bool grayscale = true;
-
-        private CameraSensorComponent cameraSensor;
+        private GameObject[] sidewalks; // 全てのSideWalkを格納
+        private bool isTouchingSideWalk = false; // 歩道接触状態
+        private bool isInsideSidewalk = false; // 歩道内にいる状態
+        private float sidewalkDistance = float.MaxValue; // 歩道までの距離
+        private int lastInsideSidewalkStep = 0; // 最後に歩道内にいたステップ
 
         public override void Initialize()
         {
-            Debug.Log("AGVAgent初期化開始");
-            // Rigidbodyの取得
+            // Rigidbody設定
             rb = GetComponent<Rigidbody>();
-
-            // Y軸（上下方向）の移動と回転、X軸（左右方向）の移動と回転を制限
             rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ 
-                            | RigidbodyConstraints.FreezePositionY; // Y軸の移動も制限
+                            | RigidbodyConstraints.FreezePositionY;
+            rb.useGravity = true;
 
-            // 進行方向（Z軸）のみ許可
-            rb.useGravity = true; // 重力を使用することで、上下に引っ張られる動きがある
-            // カメラセンサーの設定
-            if (cameraSensor == null)
-            {
-                // CameraSensorComponentを追加
-                cameraSensor = gameObject.AddComponent<CameraSensorComponent>();
-                
-                // カメラセンサーの基本設定
-                cameraSensor.Camera = agentCamera;
-                cameraSensor.Width = cameraWidth;
-                cameraSensor.Height = cameraHeight;
-                cameraSensor.Grayscale = grayscale;
-                
-                // 圧縮設定
-                cameraSensor.CompressionType = SensorCompressionType.PNG;
-                
-                Debug.Log($"カメラセンサーを初期化しました: {cameraWidth}x{cameraHeight}, グレースケール: {grayscale}");
-            }
+            // 初期値の設定
+            previousDistance = GetDistanceToTarget();
+            initialDistance = previousDistance;
 
-            // カメラの存在確認
-            if (agentCamera == null)
-            {
-                Debug.LogError("カメラが設定されていません！");
-            }
+            // シーン内の全てのSideWalkタグを持つオブジェクトを取得
+            sidewalks = GameObject.FindGameObjectsWithTag("SideWalk");
         }
 
         public override void OnEpisodeBegin()
         {
-            // target.localPosition = new Vector3(
-            //     Random.Range(-30f, 30f),
-            //     target.localPosition.y,
-            //     Random.Range(-30f, 30f)
-            // );
+            // エージェントとターゲットをリセット
             previousDistance = GetDistanceToTarget();
             initialDistance = previousDistance;
         }
 
         public override void CollectObservations(VectorSensor sensor)
         {
-            Debug.Log($"観測データ:{transform.position}");
-            sensor.AddObservation(transform.position.x); // x座標
-            sensor.AddObservation(transform.position.z); // z座標
-            sensor.AddObservation(previousDistance); // 目標までの距離
+            // ターゲットから見た相対座標 (X, Z)
+            Vector3 relativePosition = target.position - agent.position;
+            sensor.AddObservation(relativePosition.x); // X方向の相対座標
+            sensor.AddObservation(relativePosition.z); // Z方向の相対座標
 
-            // カメラ観測は自動的に処理されるため、ここでは追加の処理は不要
+            // エージェントの進行方向とターゲットとの相対角度を計算
+            Vector3 targetDirection = target.position - agent.position;
+            targetDirection.y = 0;  // 高さ方向の影響を無視
+
+            // 進行方向とターゲット方向の角度を計算 (Y軸周り)
+            float relativeAngle = Vector3.SignedAngle(agent.forward, targetDirection, Vector3.up);
+            sensor.AddObservation(relativeAngle);  // エージェントとターゲットの相対角度
         }
+
+
 
         public override void OnActionReceived(ActionBuffers actions)
         {
             // AGVの制御
             float speed = Mathf.Clamp(actions.ContinuousActions[0], -1f, 1f) * agvController.maxLinearSpeed;
             float rotSpeed = Mathf.Clamp(actions.ContinuousActions[1], -1f, 1f) * agvController.maxRotationalSpeed;
+            Debug.Log("Speed: " + speed + ", RotSpeed: " + rotSpeed);
             agvController.RobotInput(speed, -rotSpeed);
 
-            // サイドウォークとの距離を計算
-            CalculateSidewalkDistances();
-            // 現在の距離計算
-            float currentDistance = GetDistanceToTarget();
+            // 歩道にいるかどうかを更新
+            UpdateSidewalkStatus();
 
             // 距離に基づく報酬
-            float distanceReward = previousDistance - currentDistance;
-            
-            // 距離に基づく報酬 (正規化)
-            float normalizedDistanceReward = Mathf.Clamp(distanceReward / initialDistance, -1f, 1f);
-            AddReward(normalizedDistanceReward);
-            Debug.Log($"報酬: {normalizedDistanceReward}");
-
-            // 停滞ペナルティ
-            if (Mathf.Abs(speed) < 0.01f && Mathf.Abs(rotSpeed) < 0.01f)
+            float currentDistance = GetDistanceToTarget();
+            float distanceDelta = previousDistance - currentDistance;
+            Debug.Log("縮まった距離: " + distanceDelta);
+            if (currentDistance < previousDistance)
             {
-                AddReward(-0.1f); // 小さな停滞ペナルティ
+                Debug.Log("近づいた");
+                AddReward(4.0f * distanceDelta); // 近づいた場合の報酬
+            }
+            else
+            {
+                Debug.Log("遠ざかった");
+                AddReward(-2.0f * distanceDelta); // 遠ざかった場合のペナルティ
             }
 
-            // 過剰な回転へのペナルティ
-            float rotationPenalty = Mathf.Abs(rotSpeed) * 0.01f;
-            AddReward(-rotationPenalty);
-
-            // 目標到達判定
+            // 目標に到達した場合の報酬
             if (currentDistance < distanceThreshold)
             {
-                AddReward(10.0f); // 目標到達報酬
+                AddReward(0.5f);
                 EndEpisode();
             }
 
-            // 最大エピソード長でのペナルティ
+            // // 歩道内外の報酬
+            // if (isInsideSidewalk)
+            // {
+            //     Debug.Log("歩道内");
+            //     lastInsideSidewalkStep = StepCount;
+            // }
+            // else
+            // {
+            //     float timeOutside = StepCount - lastInsideSidewalkStep;
+            //     AddReward(-0.01f * timeOutside); // 時間に基づくペナルティ
+            //     Debug.Log("歩道外");
+
+            //     // 歩道との距離に基づく報酬
+            //     float currentSidewalkDistance = GetDistanceToNearestSidewalk();
+            //     Debug.Log("歩道までの距離: " + currentSidewalkDistance);
+            //     if (currentSidewalkDistance < sidewalkDistance)
+            //     {
+            //         AddReward(0.2f); // 歩道に近づいた場合の報酬
+            //     }
+            //     else
+            //     {
+            //         AddReward(-0.1f); // 歩道から遠ざかった場合のペナルティ
+            //     }
+            //     sidewalkDistance = currentSidewalkDistance;
+            // }
+            
+            // 経過ステップ数に応じえてペナルティー
+            AddReward(-0.000001f * StepCount);
+
+            // 最大ステップ数に達した場合のペナルティ
             if (StepCount >= MaxStep)
             {
-                AddReward(-1.0f); // 目標に到達できなかった場合のペナルティ
+                AddReward(-0.1f);
                 EndEpisode();
             }
 
@@ -132,61 +137,77 @@ namespace AGV.Control
             previousDistance = currentDistance;
         }
 
-        private float GetDistanceToTarget()
-        {
-            return Vector3.Distance(agent.localPosition, target.localPosition);
-        }
-
         public override void Heuristic(in ActionBuffers actionsOut)
         {
             var continuousActions = actionsOut.ContinuousActions;
-            continuousActions[0] = Input.GetAxis("Vertical");
-            continuousActions[1] = Input.GetAxis("Horizontal");
+            continuousActions[0] = Input.GetAxis("Vertical"); // 前進・後退
+            continuousActions[1] = Input.GetAxis("Horizontal"); // 回転
         }
 
-        private void CalculateSidewalkDistances()
+        private float GetDistanceToTarget()
         {
-            GameObject[] sidewalks = GameObject.FindGameObjectsWithTag("SideWalk");
-            if (sidewalks.Length == 0)
+            return Vector3.Distance(agent.position, target.position);
+        }
+
+        private float GetDistanceToNearestSidewalk()
+        {
+            float nearestDistance = float.MaxValue;
+
+            // 全ての歩道オブジェクトの中で最も近い距離を計算
+            foreach (var sidewalk in sidewalks)
             {
-                Debug.LogWarning("SideWalkタグ付きオブジェクトが見つかりません");
-                return;
-            }
-
-            float minDistance = float.MaxValue;
-            GameObject closestSidewalk = null;
-
-            foreach (GameObject sidewalk in sidewalks)
-            {
-                MeshCollider meshCollider = sidewalk.GetComponent<MeshCollider>();
-                if (meshCollider == null)
+                float distance = Vector3.Distance(agent.position, sidewalk.transform.position);
+                if (distance < nearestDistance)
                 {
-                    Debug.LogWarning($"SideWalkオブジェクト {sidewalk.name} に MeshCollider がありません");
-                    continue;
-                }
-
-                // 現在のエージェントの位置を取得
-                Vector3 agentPosition = agent.position;
-                Debug.Log($"ロボットの位置: {agentPosition}");
-
-                // 最も近い点を計算
-                Vector3 closestPoint = meshCollider.ClosestPoint(agentPosition);
-                float distance = Vector3.Distance(agentPosition, closestPoint);
-
-                Debug.Log($"SideWalkオブジェクト: {sidewalk.name}, ClosestPoint: {closestPoint}, 距離: {distance}");
-
-                // 最短距離の更新
-                if (distance < minDistance)
-                {
-                    minDistance = distance;
-                    closestSidewalk = sidewalk;
+                    nearestDistance = distance;
                 }
             }
 
-            if (closestSidewalk != null)
+            return nearestDistance;
+        }
+
+        private void UpdateSidewalkStatus()
+        {
+            isInsideSidewalk = false;
+
+            // エージェントから下方向にRayを発射
+            RaycastHit hit;
+            if (Physics.Raycast(agent.position, Vector3.down, out hit))
             {
-                Debug.Log($"最も近いSideWalk: {closestSidewalk.name}, 距離: {minDistance}");
+                // ヒットしたオブジェクトがSideWalkタグを持っている場合、歩道内
+                if (hit.collider.CompareTag("SideWalk"))
+                {
+                    isInsideSidewalk = true;
+                }
             }
         }
+
+        // Trigger方式での接触判定
+        // private void OnTriggerEnter(Collider other)
+        // {
+        //     // 障害物や壁との接触をチェック
+        //     if (!other.CompareTag("SideWalk"))
+        //     {
+        //         AddReward(-0.7f); // 衝突ペナルティ
+        //         Debug.Log("障害物または壁に接触");
+        //     }
+
+        //     // 歩道との接触を確認
+        //     if (other.CompareTag("SideWalk"))
+        //     {
+        //         isTouchingSideWalk = true;
+        //         Debug.Log("歩道に接触");
+        //     }
+        // }
+
+        // private void OnTriggerExit(Collider other)
+        // {
+        //     // 歩道から離れた場合の状態更新
+        //     if (other.CompareTag("SideWalk"))
+        //     {
+        //         isTouchingSideWalk = false;
+        //         Debug.Log("歩道から離れた");
+        //     }
+        // }
     }
 }

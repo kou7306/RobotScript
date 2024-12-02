@@ -71,6 +71,8 @@ namespace AGV.Control
             // 最大速度を制限
             speed = Mathf.Clamp(speed, -maxLinearSpeed, maxLinearSpeed);
             rotSpeed = Mathf.Clamp(rotSpeed, -maxRotationalSpeed, maxRotationalSpeed);
+            Debug.Log("Speed: " + speed + ", RotSpeed: " + rotSpeed);
+            
 
             // 車輪の回転速度を計算
             float wheel1Rotation = (speed / wheelRadius) * Mathf.Rad2Deg;
