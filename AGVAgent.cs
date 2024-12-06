@@ -16,12 +16,20 @@ namespace AGV.Control
         private float initialDistance;
         public Transform agent;
         private Rigidbody rb;
+        private int stagnantSteps = 0; // 停滞ステップ数
+        public float movementThreshold = 0.005f; // 停滞の基準となる位置変化量
+        private Vector3 lastPosition; // 前回の位置
 
         private GameObject[] sidewalks; // 全てのSideWalkを格納
         private bool isTouchingSideWalk = false; // 歩道接触状態
         private bool isInsideSidewalk = false; // 歩道内にいる状態
         private float sidewalkDistance = float.MaxValue; // 歩道までの距離
         private int lastInsideSidewalkStep = 0; // 最後に歩道内にいたステップ
+
+        private Vector3 initialAgentPosition;
+        private Quaternion initialAgentRotation;
+        private Vector3 initialTargetPosition;
+        private Quaternion initialTargetRotation;
 
         public override void Initialize()
         {
@@ -30,6 +38,14 @@ namespace AGV.Control
             rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ 
                             | RigidbodyConstraints.FreezePositionY;
             rb.useGravity = true;
+
+                
+            // 初期位置を保存
+            initialAgentPosition = agent.position;
+            initialAgentRotation = agent.rotation;
+
+            initialTargetPosition = target.position;
+            initialTargetRotation = target.rotation;
 
             // 初期値の設定
             previousDistance = GetDistanceToTarget();
@@ -41,10 +57,38 @@ namespace AGV.Control
 
         public override void OnEpisodeBegin()
         {
-            // エージェントとターゲットをリセット
+            // 物理エンジンをオフにする (isKinematicをtrueに設定)
+            var articulationBody = agent.GetComponent<ArticulationBody>();
+            // エージェントの位置と向きを初期状態にリセット
+            agent.position = initialAgentPosition;
+            agent.rotation = initialAgentRotation;
+            target.position = initialTargetPosition;
+            target.rotation = initialTargetRotation;
+            // エージェントの位置と向きをリセット
+
+            articulationBody.TeleportRoot(agent.position, agent.rotation);
+            // target.position = new Vector3(
+            //     target.position.x + Random.Range(-1.0f, 5.0f),
+            //     transform.position.y, 
+            //     target.position.z + Random.Range(-5.0f, 5.0f)
+            // );
+
+            lastPosition = agent.position;
+
+            // エージェントの速度をリセット
+            rb.velocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+
+            // 距離の初期化
             previousDistance = GetDistanceToTarget();
             initialDistance = previousDistance;
+
+            // 歩道の状態も初期化
+            isInsideSidewalk = false;
+            sidewalkDistance = float.MaxValue;
+            lastInsideSidewalkStep = 0;
         }
+
 
         public override void CollectObservations(VectorSensor sensor)
         {
@@ -77,7 +121,7 @@ namespace AGV.Control
 
             // 距離に基づく報酬
             float currentDistance = GetDistanceToTarget();
-            float distanceDelta = previousDistance - currentDistance;
+            float distanceDelta =  Mathf.Abs(previousDistance - currentDistance);
             Debug.Log("縮まった距離: " + distanceDelta);
             if (currentDistance < previousDistance)
             {
@@ -90,11 +134,31 @@ namespace AGV.Control
                 AddReward(-2.0f * distanceDelta); // 遠ざかった場合のペナルティ
             }
 
+            // -4.40921  24.406372
+            // relative_position: [-4.40921 24.42543]
+
             // 目標に到達した場合の報酬
             if (currentDistance < distanceThreshold)
             {
                 AddReward(0.5f);
+                Debug.Log("目標に到達");
                 EndEpisode();
+            }
+
+            // 停滞の判定
+            float positionChange = Vector3.Distance(agent.position,  lastPosition);
+            Debug.Log($"現在の位置: {agent.position}");
+            Debug.Log($"前回の位置: {lastPosition}");
+            Debug.Log($"位置変化量: {positionChange}");
+            if (positionChange <= movementThreshold)
+            {
+                stagnantSteps++;
+                Debug.Log($"停滞ステップ数: {stagnantSteps}");
+                AddReward(-0.0001f * stagnantSteps); // 停滞中のペナルティ（少しずつ）
+            }
+            else
+            {
+                stagnantSteps = 0; // 動いている場合はリセット
             }
 
             // // 歩道内外の報酬
@@ -124,7 +188,7 @@ namespace AGV.Control
             // }
             
             // 経過ステップ数に応じえてペナルティー
-            AddReward(-0.000001f * StepCount);
+            // AddReward(-0.000001f * StepCount);
 
             // 最大ステップ数に達した場合のペナルティ
             if (StepCount >= MaxStep)
@@ -135,6 +199,9 @@ namespace AGV.Control
 
             // 距離の更新
             previousDistance = currentDistance;
+
+            // 前回の位置を更新
+            lastPosition =agent.position;
         }
 
         public override void Heuristic(in ActionBuffers actionsOut)
