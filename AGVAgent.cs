@@ -31,6 +31,8 @@ namespace AGV.Control
         private Vector3 initialTargetPosition;
         private Quaternion initialTargetRotation;
 
+        public LiDAR3DSimulator lidarSimulator;
+
         public override void Initialize()
         {
             // Rigidbody設定
@@ -53,6 +55,8 @@ namespace AGV.Control
 
             // シーン内の全てのSideWalkタグを持つオブジェクトを取得
             sidewalks = GameObject.FindGameObjectsWithTag("SideWalk");
+
+            lidarSimulator = FindObjectOfType<LiDAR3DSimulator>(); // LiDARシミュレーターをシーンから取得
         }
 
         public override void OnEpisodeBegin()
@@ -104,6 +108,13 @@ namespace AGV.Control
             // 進行方向とターゲット方向の角度を計算 (Y軸周り)
             float relativeAngle = Vector3.SignedAngle(agent.forward, targetDirection, Vector3.up);
             sensor.AddObservation(relativeAngle);  // エージェントとターゲットの相対角度
+
+            // 点群情報の追加
+            List<Vector3> pointCloud = lidarSimulator.GetPointCloud();
+            foreach (Vector3 point in pointCloud)
+            {
+                sensor.AddObservation(point); // 各点の座標を観測に追加
+            }
         }
 
 
@@ -161,34 +172,45 @@ namespace AGV.Control
                 stagnantSteps = 0; // 動いている場合はリセット
             }
 
-            // // 歩道内外の報酬
-            // if (isInsideSidewalk)
-            // {
-            //     Debug.Log("歩道内");
-            //     lastInsideSidewalkStep = StepCount;
-            // }
-            // else
-            // {
-            //     float timeOutside = StepCount - lastInsideSidewalkStep;
-            //     AddReward(-0.01f * timeOutside); // 時間に基づくペナルティ
-            //     Debug.Log("歩道外");
+            // 歩道内外の報酬
+            if (isInsideSidewalk)
+            {
+                Debug.Log("歩道内");
+                lastInsideSidewalkStep = StepCount;
+            }
+            else
+            {
+                float timeOutside = StepCount - lastInsideSidewalkStep;
+                AddReward(-0.00001f * timeOutside); // 時間に基づくペナルティ
+                Debug.Log("歩道外");
 
-            //     // 歩道との距離に基づく報酬
-            //     float currentSidewalkDistance = GetDistanceToNearestSidewalk();
-            //     Debug.Log("歩道までの距離: " + currentSidewalkDistance);
-            //     if (currentSidewalkDistance < sidewalkDistance)
-            //     {
-            //         AddReward(0.2f); // 歩道に近づいた場合の報酬
-            //     }
-            //     else
-            //     {
-            //         AddReward(-0.1f); // 歩道から遠ざかった場合のペナルティ
-            //     }
-            //     sidewalkDistance = currentSidewalkDistance;
-            // }
+                // 歩道との距離に基づく報酬
+                float currentSidewalkDistance = GetDistanceToNearestSidewalk();
+                Debug.Log("歩道までの距離: " + currentSidewalkDistance);
+                if (currentSidewalkDistance < sidewalkDistance)
+                {
+                    AddReward(0.005f); // 歩道に近づいた場合の報酬
+                }
+                else
+                {
+                    AddReward(-0.001f); // 歩道から遠ざかった場合のペナルティ
+                }
+                sidewalkDistance = currentSidewalkDistance;
+            }
             
             // 経過ステップ数に応じえてペナルティー
-            // AddReward(-0.000001f * StepCount);
+            AddReward(-0.000001f * StepCount);
+
+
+            // 障害物の接触判定
+            List<Vector3> pointCloud = lidarSimulator.GetPointCloud();
+            foreach (Vector3 point in pointCloud)
+            {
+                if (point.magnitude < 2.0f) // しきい値1.0f以内で障害物が検出された場合
+                {
+                    AddReward(-0.4f); // 障害物との接触にペナルティを追加
+                }
+            }
 
             // 最大ステップ数に達した場合のペナルティ
             if (StepCount >= MaxStep)
