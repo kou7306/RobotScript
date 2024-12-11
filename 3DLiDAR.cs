@@ -9,11 +9,12 @@ public class LiDAR3DSimulator : MonoBehaviour
     public float horizontalFOV = 360f; // 水平方向の視野角（360度）
     public float verticalFOV = 60f;   // 垂直方向の視野角（最大90度）
 
-    private List<Vector3> pointCloud = new List<Vector3>();
+    private List<float> distances = new List<float>(); // 距離のリスト
 
-    public List<Vector3> GetPointCloud()
+    // LiDARの距離データを取得するメソッド
+    public List<float> GetDistances()
     {
-        return pointCloud;
+        return distances;
     }
 
     void Update()
@@ -23,7 +24,7 @@ public class LiDAR3DSimulator : MonoBehaviour
 
     void Simulate3DLiDAR()
     {
-        pointCloud.Clear(); // 前フレームの点群データをクリア
+        distances.Clear(); // 前フレームの距離データをクリア
 
         float horizontalAngleIncrement = horizontalFOV / horizontalRays;
         float verticalAngleIncrement = verticalFOV / verticalRays;
@@ -40,17 +41,25 @@ public class LiDAR3DSimulator : MonoBehaviour
                 RaycastHit hit;
                 if (Physics.Raycast(transform.position, direction, out hit, maxDistance))
                 {
-                    pointCloud.Add(hit.point);
+                    // ヒットした場合は距離を計算して保存
+                    float distance = Vector3.Distance(transform.position, hit.point);
+                    distances.Add(distance);
                     Debug.DrawLine(transform.position, hit.point, Color.red);
+                }
+                else
+                {
+                    // 何もヒットしなかった場合は最大距離を記録
+                    distances.Add(maxDistance);
                 }
             }
         }
 
-        ProcessPointCloud(pointCloud);
+        ProcessDistances(distances);
     }
 
-    void ProcessPointCloud(List<Vector3> points)
+    // LiDARの距離データを処理するメソッド
+    void ProcessDistances(List<float> distances)
     {
-        Debug.Log($"Captured {points.Count} points");
+        Debug.Log($"Captured {distances.Count} distances");
     }
 }

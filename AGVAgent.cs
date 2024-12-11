@@ -17,6 +17,7 @@ namespace AGV.Control
         public Transform agent;
         private Rigidbody rb;
         private int stagnantSteps = 0; // 停滞ステップ数
+        public int maxStagnantSteps = 500; // 停滞ステップ数の最大値
         public float movementThreshold = 0.005f; // 停滞の基準となる位置変化量
         private Vector3 lastPosition; // 前回の位置
 
@@ -109,13 +110,16 @@ namespace AGV.Control
             float relativeAngle = Vector3.SignedAngle(agent.forward, targetDirection, Vector3.up);
             sensor.AddObservation(relativeAngle);  // エージェントとターゲットの相対角度
 
-            // 点群情報の追加
-            List<Vector3> pointCloud = lidarSimulator.GetPointCloud();
-            foreach (Vector3 point in pointCloud)
+            // 距離情報の追加
+            List<float> distances = lidarSimulator.GetDistances(); // 距離データを取得
+            foreach (float distance in distances)
             {
-                sensor.AddObservation(point); // 各点の座標を観測に追加
+                sensor.AddObservation(distance); // 各距離を観測に追加
             }
+
+            Debug.Log($"距離データの数: {distances.Count}"); // 距離データの数を出力
         }
+
 
 
 
@@ -151,7 +155,7 @@ namespace AGV.Control
             // 目標に到達した場合の報酬
             if (currentDistance < distanceThreshold)
             {
-                AddReward(0.5f);
+                AddReward(5.0f);
                 Debug.Log("目標に到達");
                 EndEpisode();
             }
@@ -166,6 +170,12 @@ namespace AGV.Control
                 stagnantSteps++;
                 Debug.Log($"停滞ステップ数: {stagnantSteps}");
                 AddReward(-0.0001f * stagnantSteps); // 停滞中のペナルティ（少しずつ）
+                // 停滞ステップ数が最大値に達した場合
+                if (stagnantSteps >= maxStagnantSteps)
+                {
+                    AddReward(-2.0f);
+                    EndEpisode();
+                }
             }
             else
             {
@@ -181,7 +191,7 @@ namespace AGV.Control
             else
             {
                 float timeOutside = StepCount - lastInsideSidewalkStep;
-                AddReward(-0.00001f * timeOutside); // 時間に基づくペナルティ
+                AddReward(-0.05f); // 時間に基づくペナルティ
                 Debug.Log("歩道外");
 
                 // 歩道との距離に基づく報酬
@@ -189,11 +199,11 @@ namespace AGV.Control
                 Debug.Log("歩道までの距離: " + currentSidewalkDistance);
                 if (currentSidewalkDistance < sidewalkDistance)
                 {
-                    AddReward(0.005f); // 歩道に近づいた場合の報酬
+                    AddReward(0.05f); // 歩道に近づいた場合の報酬
                 }
                 else
                 {
-                    AddReward(-0.001f); // 歩道から遠ざかった場合のペナルティ
+                    AddReward(-0.01f); // 歩道から遠ざかった場合のペナルティ
                 }
                 sidewalkDistance = currentSidewalkDistance;
             }
@@ -203,19 +213,19 @@ namespace AGV.Control
 
 
             // 障害物の接触判定
-            List<Vector3> pointCloud = lidarSimulator.GetPointCloud();
-            foreach (Vector3 point in pointCloud)
+            List<float> distances = lidarSimulator.GetDistances(); // 距離データを取得
+            foreach (float distance in distances)
             {
-                if (point.magnitude < 2.0f) // しきい値1.0f以内で障害物が検出された場合
+                if (distance < 2.0f) // しきい値2.0f以内で障害物が検出された場合
                 {
-                    AddReward(-0.4f); // 障害物との接触にペナルティを追加
+                    AddReward(-0.05f); // 障害物との接触にペナルティを追加
                 }
             }
 
             // 最大ステップ数に達した場合のペナルティ
             if (StepCount >= MaxStep)
             {
-                AddReward(-0.1f);
+                AddReward(-1.0f);
                 EndEpisode();
             }
 
@@ -235,23 +245,24 @@ namespace AGV.Control
 
         private float GetDistanceToTarget()
         {
-            return Vector3.Distance(agent.position, target.position);
+            // y座標を無視して、xとz座標の差分のみで距離を計算
+            return Vector2.Distance(new Vector2(agent.position.x, agent.position.z), new Vector2(target.position.x, target.position.z));
         }
 
         private float GetDistanceToNearestSidewalk()
         {
             float nearestDistance = float.MaxValue;
 
-            // 全ての歩道オブジェクトの中で最も近い距離を計算
+            // 全ての歩道オブジェクトの中で最も近い距離を計算（xとz座標のみで計算）
             foreach (var sidewalk in sidewalks)
             {
-                float distance = Vector3.Distance(agent.position, sidewalk.transform.position);
+                float distance = Vector2.Distance(new Vector2(agent.position.x, agent.position.z), new Vector2(sidewalk.transform.position.x, sidewalk.transform.position.z));
                 if (distance < nearestDistance)
                 {
                     nearestDistance = distance;
                 }
-            }
-
+            }  
+            Debug.Log("歩道との距離" + nearestDistance);
             return nearestDistance;
         }
 
@@ -271,32 +282,9 @@ namespace AGV.Control
             }
         }
 
-        // Trigger方式での接触判定
-        // private void OnTriggerEnter(Collider other)
-        // {
-        //     // 障害物や壁との接触をチェック
-        //     if (!other.CompareTag("SideWalk"))
-        //     {
-        //         AddReward(-0.7f); // 衝突ペナルティ
-        //         Debug.Log("障害物または壁に接触");
-        //     }
-
-        //     // 歩道との接触を確認
-        //     if (other.CompareTag("SideWalk"))
-        //     {
-        //         isTouchingSideWalk = true;
-        //         Debug.Log("歩道に接触");
-        //     }
-        // }
-
-        // private void OnTriggerExit(Collider other)
-        // {
-        //     // 歩道から離れた場合の状態更新
-        //     if (other.CompareTag("SideWalk"))
-        //     {
-        //         isTouchingSideWalk = false;
-        //         Debug.Log("歩道から離れた");
-        //     }
-        // }
+        private void QuitTraining()
+        {
+            Application.Quit(); // ビルドされたアプリケーションではこれを使用
+        }
     }
 }
