@@ -4,6 +4,7 @@ using UnityEngine;
 using Unity.MLAgents;
 using Unity.MLAgents.Sensors;
 using Unity.MLAgents.Actuators;
+using System.Linq;
 
 namespace AGV.Control
 {
@@ -14,6 +15,7 @@ namespace AGV.Control
         public float distanceThreshold;
         private float previousDistance;
         private float initialDistance;
+        private int episodeCount = 0; 
         public Transform agent;
         private Rigidbody rb;
         private int stagnantSteps = 0; // 停滞ステップ数
@@ -125,6 +127,7 @@ namespace AGV.Control
 
         public override void OnActionReceived(ActionBuffers actions)
         {
+            Debug.Log("エピソード数: " + episodeCount);
             // AGVの制御
             float speed = Mathf.Clamp(actions.ContinuousActions[0], -1f, 1f) * agvController.maxLinearSpeed;
             float rotSpeed = Mathf.Clamp(actions.ContinuousActions[1], -1f, 1f) * agvController.maxRotationalSpeed;
@@ -141,12 +144,12 @@ namespace AGV.Control
             if (currentDistance < previousDistance)
             {
                 Debug.Log("近づいた");
-                AddReward(4.0f * distanceDelta); // 近づいた場合の報酬
+                AddReward(0.2f * distanceDelta); // 近づいた場合の報酬
             }
             else
             {
                 Debug.Log("遠ざかった");
-                AddReward(-2.0f * distanceDelta); // 遠ざかった場合のペナルティ
+                AddReward(-0.05f * distanceDelta); // 遠ざかった場合のペナルティ
             }
 
             // -4.40921  24.406372
@@ -155,8 +158,9 @@ namespace AGV.Control
             // 目標に到達した場合の報酬
             if (currentDistance < distanceThreshold)
             {
-                AddReward(5.0f);
+                SetReward(100.0f);
                 Debug.Log("目標に到達");
+                episodeCount++;
                 EndEpisode();
             }
 
@@ -169,11 +173,11 @@ namespace AGV.Control
             {
                 stagnantSteps++;
                 Debug.Log($"停滞ステップ数: {stagnantSteps}");
-                AddReward(-0.0001f * stagnantSteps); // 停滞中のペナルティ（少しずつ）
+                AddReward(-0.0000001f * stagnantSteps); // 停滞中のペナルティ（少しずつ）
                 // 停滞ステップ数が最大値に達した場合
                 if (stagnantSteps >= maxStagnantSteps)
                 {
-                    AddReward(-2.0f);
+                    SetReward(-50.0f);
                     EndEpisode();
                 }
             }
@@ -186,12 +190,13 @@ namespace AGV.Control
             if (isInsideSidewalk)
             {
                 Debug.Log("歩道内");
+                AddReward(0.01f); // 歩道内にいる場合の報酬
                 lastInsideSidewalkStep = StepCount;
             }
             else
             {
                 float timeOutside = StepCount - lastInsideSidewalkStep;
-                AddReward(-0.05f); // 時間に基づくペナルティ
+                AddReward(-0.001f); // 時間に基づくペナルティ
                 Debug.Log("歩道外");
 
                 // 歩道との距離に基づく報酬
@@ -199,33 +204,33 @@ namespace AGV.Control
                 Debug.Log("歩道までの距離: " + currentSidewalkDistance);
                 if (currentSidewalkDistance < sidewalkDistance)
                 {
-                    AddReward(0.05f); // 歩道に近づいた場合の報酬
+                    AddReward(0.0015f); // 歩道に近づいた場合の報酬
                 }
                 else
                 {
-                    AddReward(-0.01f); // 歩道から遠ざかった場合のペナルティ
+                    AddReward(-0.0005f); // 歩道から遠ざかった場合のペナルティ
                 }
                 sidewalkDistance = currentSidewalkDistance;
             }
             
             // 経過ステップ数に応じえてペナルティー
-            AddReward(-0.000001f * StepCount);
+            AddReward(-0.0000001f * StepCount);
+            Debug.Log("ステップ数: " + StepCount);
 
 
             // 障害物の接触判定
             List<float> distances = lidarSimulator.GetDistances(); // 距離データを取得
-            foreach (float distance in distances)
+            if (distances.Any(distance => distance <  1.0f)) // しきい値2.0f以内で障害物が検出された場合
             {
-                if (distance < 2.0f) // しきい値2.0f以内で障害物が検出された場合
-                {
-                    AddReward(-0.05f); // 障害物との接触にペナルティを追加
-                }
+                Debug.Log("障害物と接触");
+                AddReward(-0.01f); // 障害物との接触にペナルティを追加
             }
+        
 
             // 最大ステップ数に達した場合のペナルティ
             if (StepCount >= MaxStep)
             {
-                AddReward(-1.0f);
+                SetReward(-100.0f);
                 EndEpisode();
             }
 
@@ -234,13 +239,39 @@ namespace AGV.Control
 
             // 前回の位置を更新
             lastPosition =agent.position;
+
+            print("Total Reward: " + GetCumulativeReward());
         }
 
         public override void Heuristic(in ActionBuffers actionsOut)
         {
             var continuousActions = actionsOut.ContinuousActions;
-            continuousActions[0] = Input.GetAxis("Vertical"); // 前進・後退
-            continuousActions[1] = Input.GetAxis("Horizontal"); // 回転
+            if(Input.GetAxis("Vertical") > 0)
+            {
+                continuousActions[0] = 1.0f;
+            }
+            else if(Input.GetAxis("Vertical") < 0)
+            {
+                continuousActions[0] = -1.0f;
+            }
+            else
+            {
+                continuousActions[0] = 0.0f;
+            }
+            
+            if(Input.GetAxis("Horizontal") > 0)
+            {
+                continuousActions[1] = 1.0f;
+            }
+            else if(Input.GetAxis("Horizontal") < 0)
+            {
+                continuousActions[1] = -1.0f;
+            }
+            else
+            {
+                continuousActions[1] = 0.0f;
+            }
+            Debug.Log("Heuristic" + continuousActions[0] + ", " + continuousActions[1]);
         }
 
         private float GetDistanceToTarget()

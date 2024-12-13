@@ -7,7 +7,7 @@ public class LiDAR3DSimulator : MonoBehaviour
     public int verticalRays = 32;    // 垂直方向のビーム数（最大32）
     public float maxDistance = 100f; // 最大測定距離
     public float horizontalFOV = 360f; // 水平方向の視野角（360度）
-    public float verticalFOV = 60f;   // 垂直方向の視野角（最大90度）
+    public float verticalFOV = 30f;   // 垂直方向の視野角（最大90度）
 
     private List<float> distances = new List<float>(); // 距離のリスト
 
